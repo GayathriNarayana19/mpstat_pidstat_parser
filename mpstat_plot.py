@@ -6,6 +6,23 @@ import glob
 import math
 import numpy as np
 import os
+import PyPDF2
+
+def merge_pdfs(pdf_files, output_pdf):
+    """Merge multiple PDFs into one."""
+    pdf_writer = PyPDF2.PdfWriter()
+
+    for pdf_file in pdf_files:
+        try:
+            pdf_reader = PyPDF2.PdfReader(pdf_file)
+            for page in range(len(pdf_reader.pages)):
+                pdf_writer.add_page(pdf_reader.pages[page])
+        except Exception as e:
+            print(f"Error reading {pdf_file}: {e}")
+
+    with open(output_pdf, 'wb') as out_file:
+        pdf_writer.write(out_file)
+    print(f"Merged PDF saved as {output_pdf}")
 
 # Set seaborn style
 sns.set_palette("Set2")  # Set2 color palette for distinct bar colors
@@ -117,6 +134,7 @@ def plot_metric(df, metric_column, metric_name, pdf_path):
             if len(cpus) == 1:
                 # Create a single subplot layout (1 row, 1 column)
                 fig, axs = plt.subplots(1, 1, figsize=(8.5, 11))
+                fig.suptitle(f'Comparison of Metrics - {metric_name}', fontsize=16)
                 axs.set_facecolor('#f0f0f0')  # Set subplot background color
                 axs.grid(axis='y', linestyle='--', color='white', linewidth=0.7)  # White horizontal grid lines
 
@@ -153,6 +171,7 @@ def plot_metric(df, metric_column, metric_name, pdf_path):
             else:
                 # Create a 3x2 grid (fixed size) for 2 or more subplots
                 fig, axs = plt.subplots(3, 2, figsize=(8.5, 11))
+                fig.suptitle(f'Comparison of Metrics - {metric_name}', fontsize=16)
                 axs = axs.flatten()  # Flatten the 3x2 grid into a 1D array for easier access
 
                 # Set the background color for all subplots
@@ -203,7 +222,7 @@ def plot_metric(df, metric_column, metric_name, pdf_path):
 if __name__ == "__main__":
     # Get the file paths (directory, single CSV, or multiple CSVs)
     csv_files = get_file_paths()
-                
+    generated_pdfs = []                
     if csv_files:
         # List of metrics you want to plot for 'CPU all' and each individual core
         metrics = ['%usr', '%sys', '%idle', '%iowait', '%irq', '%soft', '%steal', '%guest', '%gnice']
@@ -222,4 +241,10 @@ if __name__ == "__main__":
                 # Define the full path for the output PDF
                 pdf_path = os.path.join(output_dir, f'{metric}_comparison.pdf')
                 plot_metric(df, metric, metric, pdf_path)
+                generated_pdfs.append(pdf_path)
             print(f'{metric} comparison saved to {pdf_path}')
+    
+    merged_output_pdf = os.path.join(output_dir, "mpstat_comparison_merged.pdf")
+    merge_pdfs(generated_pdfs, merged_output_pdf)
+    print(f"Final merged PDF saved to {merged_output_pdf}")
+

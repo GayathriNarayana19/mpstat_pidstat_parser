@@ -1,91 +1,69 @@
 import subprocess
 import csv
+import os
 
-# Function to get user input and run the pidstat command
 def capture_pidstat_data():
-    # Get user input for PID
     pid = input("Enter the PID to monitor: ")
 
-    # Validate the PID input
     try:
         pid = int(pid)
     except ValueError:
         print("Invalid PID. Please enter a valid integer for PID.")
         return
 
-    # Check if the process with the given PID exists
     check_pid_command = ["ps", "-p", str(pid)]
     result = subprocess.run(check_pid_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
-    # If the process does not exist, return an error
     if result.returncode != 0:
         print(f"Error: No process with PID {pid} found.")
         return
 
-    # Get user input for interval and count
     interval = input("Enter the interval in seconds (default 1): ")
     count = input("Enter the number of times to repeat (default 5): ")
 
-    # Set default values if the user doesn't input anything
-    if not interval:
-        interval = 1
-    else:
-        interval = int(interval)
+    interval = int(interval) if interval else 1
+    count = int(count) if count else 5
 
-    if not count:
-        count = 5
-    else:
-        count = int(count)
-
-    # Validate the PID input
-    try:
-        pid = int(pid)
-    except ValueError:
-        print("Invalid PID. Please enter a valid integer for PID.")
-        return
-
-    # Run the pidstat command
-    command = ["pidstat", "-t", "-p", str(pid), str(interval), str(count)]  # Run the pidstat command
+    command = ["pidstat", "-t", "-p", str(pid), str(interval), str(count)]
     result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
 
-    # Get the output of the pidstat command
     pidstat_output = result.stdout
 
-    # Prepare the CSV file name
-    file_path = f'pid_{pid}_info.csv'
+    output_dir = "pidstat_data"
+    os.makedirs(output_dir, exist_ok=True)
 
-    # Open the file in write mode to overwrite if it exists
+    file_path = os.path.join(output_dir, f'pid_{pid}_info.csv')
+
     with open(file_path, 'w', newline='') as file:
-        writer = csv.writer(file)
+        writer = csv.writer(file, delimiter=',')
 
-        # Process each line from pidstat output
         for line in pidstat_output.splitlines():
-            # Skip the line that contains the Linux information
             if "Linux" in line:
                 continue
 
-            # If the line contains average data, ensure it's added at the end
-            if "Average:" in line:
-                row = line.split()  # Split the pidstat output by spaces
+            if line.startswith("Average:"):
+                row = line.split()
                 writer.writerow(row)
+                continue
 
-            # For regular lines, split by space and write them
-            else:
-                # Process the timestamp to ensure there's no comma before AM/PM
-                if line:
-                    columns = line.split()
-                    # Merge the time part (columns[0] and columns[1]) into the first column
-                    timestamp = columns[0] + " " + columns[1]  # Join the time part (AM/PM)
-                    columns[0] = timestamp  # Replace the first column with formatted timestamp
-                    # Remove the original timestamp column (index 1) since it's now merged
-                    del columns[1]
-                    if "UID" in line:
-                        columns[0] = "Timestamp"
+            if line:
+                columns = line.split()
+                timestamp = columns[0] + " " + columns[1]
+                columns[0] = timestamp
+                del columns[1]
+
+                if "UID" in line and "Command" in line:
+                    columns[0] = "Timestamp"
                     writer.writerow(columns)
+                    continue
+
+                command_index = next((i for i, val in enumerate(columns) if val.isalpha() or val.startswith("|__")), len(columns) - 1)
+                normal_columns = columns[:command_index]
+                command_column = " ".join(columns[command_index:]).replace(",", " ")
+                writer.writerow(normal_columns + [command_column])
 
     print(f"Data successfully saved to {file_path}")
 
-# Run the function to capture data
 if __name__ == "__main__":
     capture_pidstat_data()
 
