@@ -1,59 +1,51 @@
-import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 import seaborn as sns
+import pandas as pd
 import os
 import re
 import PyPDF2
 
 def merge_pdfs(pdf_files, output_pdf):
-    """Merge multiple PDFs into one."""
     pdf_writer = PyPDF2.PdfWriter()
-
     for pdf_file in pdf_files:
         try:
             pdf_reader = PyPDF2.PdfReader(pdf_file)
-            for page in range(len(pdf_reader.pages)):
-                pdf_writer.add_page(pdf_reader.pages[page])
+            for page in pdf_reader.pages:
+                pdf_writer.add_page(page)
         except Exception as e:
             print(f"Error reading {pdf_file}: {e}")
-
     with open(output_pdf, 'wb') as out_file:
         pdf_writer.write(out_file)
     print(f"Merged PDF saved as {output_pdf}")
 
-# Function to load and extract data from CSV files for the 'Average:' rows
-def load_and_extract_cpu_data(files, metric_column):
+def load_and_extract_cpu_data(files):
     data_frames = []
-
     for file in files:
         try:
-            # Read the CSV file
-            df = pd.read_csv(file)
-            df.columns = df.columns.str.strip()  # Clean column names
+            columns = ['Timestamp', 'CPU', 'TID_1', 'TID_2', '%usr', '%system', '%guest', '%wait', '%CPU', 'Dash', 'Command']
+            df = pd.read_csv(file, header=None, names=columns, on_bad_lines='skip')
+            df.columns = df.columns.str.strip()
+            df_filtered = df[df['Timestamp'].astype(str).str.strip().str.lower() == 'average:'].copy()
 
-            # Ensure 'Timestamp' column is handled correctly
-            timestamp_col = next((col for col in df.columns if 'timestamp' in col.lower()), None)
-            if not timestamp_col:
-                print(f"Warning: No 'Timestamp' column found in {file}. Skipping...")
-                continue
+            def extract_tid(row):
+                for col in ['TID_1', 'TID_2', 'CPU']:
+                    if str(row[col]).isdigit():
+                        return int(row[col])
+                return None
 
-            # Filter rows where 'Timestamp' is 'Average:'
-            df_filtered = df[df[timestamp_col].astype(str).str.strip().str.lower() == 'average:']
+            df_filtered['TID'] = df_filtered.apply(extract_tid, axis=1)
+            df_filtered = df_filtered[df_filtered['TID'].notnull()]
+            df_filtered['TID'] = df_filtered['TID'].astype(int)
+            df_filtered['Command'] = df_filtered['Command'].astype(str).str.strip()
+            df_filtered['File'] = os.path.basename(file)
 
-            if df_filtered.empty:
-                print(f"Warning: No 'Average:' rows found in {file}. Skipping...")
-                continue
+            for col in ['%usr', '%system', '%guest', '%wait', '%CPU']:
+                if col in df_filtered.columns:
+                    df_filtered[col] = pd.to_numeric(df_filtered[col], errors='coerce')
 
-            # Add file name as a column for source identification
-            df_filtered['File'] = file.split('/')[-1]
-
-            # Ensure the metric column exists and handle it
-            if metric_column in df_filtered.columns:
-                df_filtered[metric_column] = pd.to_numeric(df_filtered[metric_column], errors='coerce')
-            else:
-                print(f"Warning: Column '{metric_column}' not found in {file}. Skipping...")
-                continue
+            # Create a label like "TID 12345 (file.csv)"
+            df_filtered['Label'] = df_filtered.apply(lambda row: f"TID {row['TID']} ({row['File']})", axis=1)
 
             data_frames.append(df_filtered)
 
@@ -64,191 +56,119 @@ def load_and_extract_cpu_data(files, metric_column):
         print("No valid data found in any files.")
         return pd.DataFrame()
 
-    result_df = pd.concat(data_frames, ignore_index=True)
-    return result_df
+    return pd.concat(data_frames, ignore_index=True)
 
-# Function to modify X-axis labels without altering the bar plot
-def shorten_filenames(ax):
-    """Modify X-axis labels to show only 'pid_<pid-num>'."""
-    labels = [tick.get_text() for tick in ax.get_xticklabels()]
-    new_labels = [re.search(r'pid_\d+', label).group(0) if re.search(r'pid_\d+', label) else label for label in labels]
-    ax.set_xticklabels(new_labels, rotation=45)
-
-# Function to plot all metrics for a single command or command+TID pair
-def plot_all_metrics(df, command, tid, output_pdf):
-    # List of all metrics to plot
+def plot_metrics_by_command(df, output_dir):
     metrics = ['%usr', '%system', '%guest', '%wait', '%CPU']
-    legend_handles = None
+    os.makedirs(output_dir, exist_ok=True)
+    generated_pdfs = []
 
-    sns.set(style="whitegrid", palette="muted")
-    fig, axes = plt.subplots(3, 2, figsize=(9, 12), sharey=True)
-    axes = axes.flatten()
+    for command, group in df.groupby('Command'):
+        sns.set(style="whitegrid", palette="muted")
+        fig, axes = plt.subplots(3, 2, figsize=(10, 12))
+        axes = axes.flatten()
+        fig.suptitle(f'Comparison of Metrics for Command: {command}', fontsize=16)
 
-    fig.suptitle(f'Comparison of Metrics for {command} (TID {tid})', fontsize=16)
+        unique_files = sorted(group['File'].unique())
 
-    unique_files = df['File'].unique()
-    num_files = len(unique_files)
+        for idx, metric in enumerate(metrics):
+            if idx >= len(axes):
+                continue
+            ax = axes[idx]
+            data = group[['Label', metric, 'File']].dropna()
 
-    for idx, metric in enumerate(metrics):
-        ax = axes[idx]
-        ax.grid(True, axis='y', linestyle='-', color='white', linewidth=0.7)
-        ax.set_facecolor('#f0f0f0')
+            sns.barplot(
+                data=data,
+                x='Label',
+                y=metric,
+                hue='File',
+                ax=ax,
+                dodge=False  # same label won't appear twice
+            )
 
-        for spine in ax.spines.values():
-            spine.set_edgecolor("black")
-            spine.set_linewidth(1)
+            # Rotate x labels for readability
+            ax.set_xticklabels(ax.get_xticklabels(), rotation=45, ha='right')
+            ax.set_title(f'{metric} Comparison', fontsize=14)
+            ax.set_xlabel('TID (File)', fontsize=12)
+            ax.set_ylabel(f'{metric} (%)', fontsize=12)
 
-        df_filtered = df[df['Command'].str.strip().str.lower() == command.lower()]
-        df_filtered = df_filtered[df_filtered['TID'] == tid]
+            for p in ax.patches:
+                if not pd.isna(p.get_height()) and p.get_height() > 0:
+                    ax.annotate(f'{p.get_height():.2f}',
+                                (p.get_x() + p.get_width() / 2., p.get_height()),
+                                ha='center', va='center',
+                                fontsize=10, color='black',
+                                xytext=(0, 5), textcoords='offset points')
 
-        if df_filtered.empty:
-            print(f"No data found for {command} (TID {tid}) - {metric}. Skipping plot.")
-            continue
+            y_max = data[metric].max()
+            ax.set_ylim(0, y_max * 1.2 if y_max > 0 else 1)
 
-        sns.barplot(data=df_filtered, x='File', y=metric, hue='File', ax=ax)
+            if ax.get_legend():
+                ax.get_legend().remove()
 
-        if not legend_handles:
-            colors = sns.color_palette("tab10", num_files)
-            legend_handles = [mpatches.Patch(color=colors[i], label=unique_files[i]) for i in range(num_files)]
-        
-        shorten_filenames(ax)
-        ax.set_title(f'{metric} Comparison', fontsize=14)
-        ax.set_xlabel('CSV Files', fontsize=12)
-        ax.set_ylabel(f'{metric} (%)', fontsize=12)
-        ax.tick_params(axis='x', rotation=45)
+        # Hide unused plot
+        if len(metrics) < len(axes):
+            for j in range(len(metrics), len(axes)):
+                axes[j].axis("off")
 
-        for p in ax.patches:
-            ax.annotate(f'{p.get_height():.2f}', 
-                        (p.get_x() + p.get_width() / 2., p.get_height()), 
-                        ha='center', va='center', 
-                        fontsize=10, color='black', 
-                        xytext=(0, 5), textcoords='offset points')
+        # Add legend only once
+        fig.legend(
+            handles=[mpatches.Patch(label=f, color=sns.color_palette()[i])
+                     for i, f in enumerate(unique_files)],
+            labels=unique_files,
+            loc='lower right',
+            bbox_to_anchor=(0.95, 0.05),
+            title="CSV files"
+        )
 
-        ax.set_ylim(0, round(ax.get_ylim()[1], -1) + 10)
+        safe_command = re.sub(r'[^a-zA-Z0-9_\-]', '_', command)
+        output_pdf = os.path.join(output_dir, f"{safe_command}_comparison.pdf")
+        plt.tight_layout(rect=[0, 0.05, 1, 1])
+        plt.savefig(output_pdf, format='pdf')
+        plt.close()
+        print(f"Generated: {output_pdf}")
+        generated_pdfs.append(output_pdf)
 
-        if ax.get_legend() is not None:
-            ax.get_legend().remove()
-
-    axes[5].axis('off')
-
-    if legend_handles:
-        fig.legend(legend_handles, unique_files, loc='lower right', bbox_to_anchor=(0.9, 0.15), ncol=1, fontsize=12, title="CSV files")
-
-    plt.tight_layout(rect=[0, 0.05, 1, 1])
-    plt.savefig(output_pdf, format='pdf')
-    plt.close(fig)
+    return generated_pdfs
 
 def main():
-    # Get CPU utilization threshold from user (default = 10)
-    threshold_input = input("Enter CPU utilization threshold (default 10%): ").strip()
-    threshold = float(threshold_input) if threshold_input else 10.0
+    try:
+        threshold = float(input("Enter CPU utilization threshold (default 10%): ").strip() or 10)
+    except ValueError:
+        print("Invalid input. Using default threshold of 10%.")
+        threshold = 10.0
 
-    # Get CSV file paths from user (default to 'pidstat_data/' directory)
-    file_paths_input = input("Enter the CSV file paths (comma separated) or press Enter to use all CSVs in 'pidstat_data/': ").strip()
-    
+    file_paths_input = input("Enter CSV file paths (comma separated), or press Enter to use all in 'pidstat_data/': ").strip()
     if file_paths_input:
-        file_paths = [file.strip() for file in file_paths_input.split(',')]
+        file_paths = [p.strip() for p in file_paths_input.split(',')]
     else:
-        # Use all CSVs in 'pidstat_data/' directory
         data_dir = "pidstat_data"
         if not os.path.exists(data_dir):
-            print(f"Error: Directory '{data_dir}' does not exist. Exiting.")
+            print(f"Directory '{data_dir}' not found.")
             return
-        file_paths = [os.path.join(data_dir, f) for f in os.listdir(data_dir) if f.endswith('.csv')]
+        file_paths = [os.path.join(data_dir, f) for f in os.listdir(data_dir) if f.endswith(".csv")]
 
-        if not file_paths:
-            print(f"Error: No CSV files found in '{data_dir}'. Exiting.")
-            return
+    if not file_paths:
+        print("No files to process.")
+        return
 
-    print(f"Using files: {file_paths}")
-
-    # Load the data
-    df = load_and_extract_cpu_data(file_paths, '%CPU')
-
+    df = load_and_extract_cpu_data(file_paths)
     if df.empty:
-        print("No valid data found for plotting. Exiting.")
+        print("No valid data found.")
         return
 
-    # Filter processes where %CPU is greater than or equal to the threshold
-    filtered_df = df[df['%CPU'] >= threshold]
-
-    if filtered_df.empty:
-        print(f"No processes found with CPU utilization >= {threshold}%. Exiting.")
+    df_filtered = df[df['%CPU'] >= threshold]
+    if df_filtered.empty:
+        print(f"No rows with %CPU >= {threshold}")
         return
 
-    # Define output directory
-    output_dir = "pidstat_plots"
-    os.makedirs(output_dir, exist_ok=True)
+    output_dir = "pidstat_command_plots"
+    generated_pdfs = plot_metrics_by_command(df_filtered, output_dir)
 
-    generated_pdfs = []
-
-    # Iterate through unique (Command, TID) pairs
-    for (command, tid), group in filtered_df.groupby(['Command', 'TID']):
-        output_pdf = os.path.join(output_dir, f"{command}_{tid}_comparison.pdf")
-        plot_all_metrics(df, command, tid, output_pdf)
-        generated_pdfs.append(output_pdf)
-        print(f"Plot for {command} (TID {tid}) saved to {output_pdf}")
-
-    # Merge all generated PDFs
     if generated_pdfs:
-        merged_output_pdf = os.path.join(output_dir, "pidstat_comparison_merged.pdf")
-        merge_pdfs(generated_pdfs, merged_output_pdf)
-        print(f"Final merged PDF saved to {merged_output_pdf}")
+        merge_pdfs(generated_pdfs, os.path.join(output_dir, "merged_command_comparison.pdf"))
     else:
-        print("No plots were generated, so no merged PDF was created")
+        print("No plots were generated.")
 
 if __name__ == "__main__":
     main()
-'''
-# Main function to run the program
-def main():
-    # Get the CPU utilization threshold from the user
-    try:
-        threshold = float(input("Enter CPU utilization threshold (default = 10): ") or 10)
-    except ValueError:
-        print("Invalid input! Using default threshold of 10.")
-        threshold = 10
-
-    # Get CSV file paths from the user
-    file_paths = input("Enter the CSV file paths (comma separated): ").split(',')
-    file_paths = [file_path.strip() for file_path in file_paths]
-
-    # Load data for CPU utilization
-    df = load_and_extract_cpu_data(file_paths, '%CPU')
-
-    if df.empty:
-        print("No valid data found for plotting. Exiting.")
-        return
-
-    # Filter processes exceeding the threshold
-    filtered_df = df[df['%CPU'] >= threshold]
-
-    if filtered_df.empty:
-        print(f"No processes exceeded {threshold}% CPU utilization. Exiting.")
-        return
-
-    # Get unique commands that exceeded the threshold
-    commands_to_plot = filtered_df['Command'].str.strip().str.lower().unique()
-
-    output_dir = "pidstat_plots"
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-
-    generated_pdfs = []
-
-    for command in commands_to_plot:
-        unique_tids = filtered_df[filtered_df['Command'].str.strip().str.lower() == command]['TID'].unique()
-        for tid in unique_tids:
-            output_pdf = os.path.join(output_dir, f"{command}_{tid}_comparison.pdf")
-            plot_all_metrics(df, command, tid, output_pdf)
-            generated_pdfs.append(output_pdf)
-            print(f"Plot for {command} (TID {tid}) saved to {output_pdf}")
-
-    merged_output_pdf = os.path.join(output_dir, "pidstat_comparison_merged.pdf")
-    merge_pdfs(generated_pdfs, merged_output_pdf)
-    print(f"Final merged PDF saved to {merged_output_pdf}")
-
-if __name__ == "__main__":
-    main()
-'''
-

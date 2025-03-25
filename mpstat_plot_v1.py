@@ -73,7 +73,7 @@ def load_and_extract_cpu_data(files, metric_column):
             df.columns = df.columns.str.strip()
 
             # Ensure 'Timestamp' column is handled correctly
-            timestamp_col = next((col for col in df.columns if 'timestamp' or 'Average' in col.lower()), None)
+            timestamp_col = next((col for col in df.columns if 'timestamp' in col.lower()), None)
             if not timestamp_col:
                 print(f"Warning: No 'Timestamp' column found in {file}. Skipping...")
                 continue
